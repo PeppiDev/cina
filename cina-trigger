@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Script disparador para atajos de teclado globales (KDE Plasma, Wayland, X11)
+DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+
+if [ -f "$DIR/venv/bin/python3" ]; then
+    exec "$DIR/venv/bin/python3" "$DIR/main.py" --trigger "$@"
+else
+    exec python3 "$DIR/main.py" --trigger "$@"
+fi
+
