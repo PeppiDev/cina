@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Entorno y Configuración Local
+.env
+config.json
+*.sock
+
+# Archivos temporales de captura y audio
+*.png
+*.jpg
+*.jpeg
+*.mp3
+*.wav
+/tmp/cina_*
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log

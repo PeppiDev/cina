@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Script disparador ultra-rápido (<10ms) para atajos de teclado globales (KDE Plasma, Wayland, X11)
+SOCK="/tmp/cina_$(id -u).sock"
+CMD="TRIGGER"
+EXPECT="OK"
+if [ "$1" = "--stop" ] || [ "$1" = "STOP" ]; then
+    CMD="STOP"
+    EXPECT="STOPPED"
+fi
+
+# Ruta ultra-rápida: enviar señal directa al socket Unix sin arrancar venv ni importar tkinter/PIL
+if [ -S "$SOCK" ]; then
+    if command -v socat &>/dev/null; then
+        RESP="$(printf '%s\n' "$CMD" | socat -t 0.5 -T 0.5 - "UNIX-CONNECT:$SOCK" 2>/dev/null | tr -d '\r\n')"
+        if [ "$RESP" = "$EXPECT" ]; then
+            exit 0
+        fi
+    elif command -v python3 &>/dev/null; then
+        if python3 -S -c "import socket,sys; s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.settimeout(0.8); s.connect(sys.argv[1]); s.sendall((sys.argv[2]+'\n').encode()); r=s.recv(64).decode().strip(); sys.exit(0 if r==sys.argv[3] else 1)" "$SOCK" "$CMD" "$EXPECT" 2>/dev/null; then
+            exit 0
+        fi
+    fi
+fi
+
+# Si solo se pidió detener audio y no hay servidor activo, terminar sin lanzar captura
+if [ "$CMD" = "STOP" ]; then
+    exit 0
+fi
+
+# Fallback autónomo si la app en segundo plano no está corriendo
+DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+
+if [ -f "$DIR/venv/bin/python3" ]; then
+    exec "$DIR/venv/bin/python3" "$DIR/main.py" --trigger "$@"
+else
+    exec python3 "$DIR/main.py" --trigger "$@"
+fi
