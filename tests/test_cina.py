@@ -48,10 +48,10 @@ class TestGeminiService(unittest.TestCase):
             [
                 (0, "gemini-3.8-flash"),
                 (1, "gemini-3.8-flash"),
-                (0, "gemini-3.7-flash"),
-                (1, "gemini-3.7-flash"),
                 (0, "gemini-3.5-flash-lite"),
                 (1, "gemini-3.5-flash-lite"),
+                (0, "gemini-3.7-flash"),
+                (1, "gemini-3.7-flash"),
             ],
         )
 
@@ -60,7 +60,67 @@ class TestGeminiService(unittest.TestCase):
         svc._record_failure(0, "gemini-3.8-flash", "rate_limit", 45.0)
         svc._record_failure(1, "gemini-3.8-flash", "auth", 3600.0)
         plan, _ = svc._build_candidate_plan()
-        self.assertEqual(plan, [(0, "gemini-3.7-flash"), (0, "gemini-3.5-flash-lite")])
+        self.assertEqual(plan, [(0, "gemini-3.5-flash-lite"), (0, "gemini-3.7-flash")])
+
+    def test_chunker_shortens_long_first_sentence(self):
+        chunker = SentenceChunker()
+        text = ("Estás viendo el perfil de GitHub del usuario PeppiDev, que muestra doscientas "
+                "contribuciones en el último año. En la sección de actividad aparecen siete repositorios. ")
+        out = chunker.feed(text)
+        self.assertTrue(out[0].endswith("PeppiDev,"), out)
+        self.assertLessEqual(len(out[0]), 71)
+        self.assertEqual(" ".join(out + [chunker.flush() or ""]).split(), text.split())
+
+    def test_chunker_cuts_first_sentence_at_connector_without_commas(self):
+        chunker = SentenceChunker()
+        out = chunker.feed("La pantalla muestra el panel de configuración del sistema operativo con varias opciones de red y almacenamiento disponibles. ")
+        self.assertEqual(out[0], "La pantalla muestra el panel de configuración del sistema operativo")
+        self.assertTrue(out[1].startswith("con varias"))
+
+    def test_hedged_request_uses_first_model_that_streams(self):
+        svc = GeminiService(api_key="k1", model="gemini-3.8-flash", hedge_delay=0.1, slow_cooldown=60.0)
+        calls = []
+
+        def fake_stream_once(key_idx, model, img_bytes, mime_type, on_chunk, cancel_event, t0):
+            calls.append(model)
+            if model == "gemini-3.8-flash":
+                # Modelo saturado: no entrega el primer token hasta que lo cancelan
+                for _ in range(100):
+                    if cancel_event.is_set():
+                        return "", 0.0
+                    time.sleep(0.01)
+                on_chunk("tarde. ")
+                return "tarde.", 1.0
+            on_chunk("Respuesta rápida. ")
+            on_chunk("Fin.")
+            return "Respuesta rápida. Fin.", 0.15
+
+        svc._stream_once = fake_stream_once
+        received = []
+        result = svc.analyze_image_stream(image_bytes=b"jpeg", on_chunk=received.append)
+        self.assertTrue(result.success)
+        self.assertEqual(result.model_used, "gemini-3.5-flash-lite")
+        self.assertEqual("".join(received), "Respuesta rápida. Fin.")
+        self.assertEqual(calls[:2], ["gemini-3.8-flash", "gemini-3.5-flash-lite"])
+        # El modelo lento queda en cooldown para el siguiente disparo
+        plan, _ = svc._build_candidate_plan()
+        self.assertEqual(plan[0], (0, "gemini-3.5-flash-lite"))
+
+    def test_hedged_request_failover_on_fast_error(self):
+        svc = GeminiService(api_key="k1", model="gemini-3.8-flash", hedge_delay=5.0)
+
+        def fake_stream_once(key_idx, model, img_bytes, mime_type, on_chunk, cancel_event, t0):
+            if model == "gemini-3.8-flash":
+                raise RuntimeError("503 UNAVAILABLE high demand")
+            on_chunk("Hola.")
+            return "Hola.", 0.1
+
+        svc._stream_once = fake_stream_once
+        t = time.perf_counter()
+        result = svc.analyze_image_stream(image_bytes=b"jpeg")
+        self.assertLess(time.perf_counter() - t, 1.0)  # no espera el hedge_delay tras un fallo rápido
+        self.assertTrue(result.success)
+        self.assertEqual(result.model_used, "gemini-3.5-flash-lite")
 
     def test_streaming_sdk_failover_and_client_reuse(self):
         created_clients = []

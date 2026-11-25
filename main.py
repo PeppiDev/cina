@@ -22,6 +22,7 @@ def _create_services():
         thinking_level=config_mgr.get("thinking_level", "low"),
         media_resolution=config_mgr.get("media_resolution", "high"),
         timeout=config_mgr.get("request_timeout", 15.0),
+        hedge_delay=config_mgr.get("hedge_delay", 2.5),
     )
     tts = TTSService(
         voice=config_mgr.get("voice", "es-ES-AlvaroNeural"),
@@ -143,6 +144,7 @@ def run_headless():
     print("[Cina] Iniciando en modo demonio persistente (Headless)... Presiona Ctrl+C para salir.")
     config_mgr, cap, gemini, tts = _create_services()
     threading.Thread(target=gemini.warmup, daemon=True).start()
+    threading.Thread(target=tts.warmup, daemon=True).start()
 
     state_lock = threading.Lock()
     active_cancel: dict = {"event": None}

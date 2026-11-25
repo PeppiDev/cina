@@ -52,7 +52,7 @@ Guía técnica para agentes y desarrolladores sobre la arquitectura, despliegue 
 nix run .        # Ejecutar directamente
 nix develop      # Shell con Python/Tkinter/Pillow + herramientas runtime
 ```
-El `flake.nix` envuelve `cina` y `cina-trigger` con `python3.withPackages` (`pillow`, `tkinter`, `requests` y paquetes opcionales `google-genai`, `edge-tts`, `pynput`, `mss` según el canal de nixpkgs) y añade al `PATH` `pipewire`, `socat`, `espeak-ng`, `grim`, `scrot` y `piper-tts` si está disponible.
+El `flake.nix` envuelve `cina` y `cina-trigger` con `python3.withPackages` (`pillow`, `tkinter`, `requests` y paquetes opcionales `google-genai`, `edge-tts`, `pynput`, `mss` según el canal de nixpkgs) más `piper-tts` sólo de inferencia (`override { withTrain = false; ... }`, sin torch) como módulo Python, y añade al `PATH` `pipewire`, `socat`, `espeak-ng`, `grim` y `scrot`.
 
 ### Distribuciones Tradicionales (Fedora, Ubuntu, Debian, Arch, openSUSE)
 ```bash
@@ -76,7 +76,8 @@ chmod +x setup.sh
   "image_max_width": 1600,
   "image_quality": 82,
   "voice": "es-ES-AlvaroNeural",
-  "tts_engine": "edge-tts",
+  "hedge_delay": 2.5,
+  "tts_engine": "piper",
   "piper_model": "",
   "speech_rate": "+0%",
   "speech_volume": "+0%",
@@ -99,9 +100,11 @@ chmod +x setup.sh
   - `429` / `RESOURCE_EXHAUSTED`: cooldown exacto por `(key_idx, model)`.
   - `401` / `403` / `API_KEY_INVALID`: invalida la clave y rota inmediatamente.
   - `404`: cooldown al modelo.
-  - `500/502/503/504` / timeout: cooldown corto (15 s) y failover inmediato.
+  - `500/502/503/504` / timeout: cooldown de 60 s y failover inmediato.
+- **Hedging**: si no llega el primer token en `hedge_delay` s se lanza en paralelo el siguiente candidato; el primero que emite texto gana y los demás se cancelan. El perdedor más lento queda en cooldown 60 s.
+- **Orden de respaldo**: tras el modelo primario van primero los modelos `lite` (menor latencia).
   - `400` en `thinking_level`/`media_resolution`: reintento sin parámetros avanzados.
-- **Cadena de modelos**: `gemini-3.8-flash` -> `gemini-3.7-flash` -> `gemini-3.5-flash-lite` (con promoción segura `MINIMAL` -> `LOW` en modelos no-lite).
+- **Cadena de modelos**: `gemini-3.8-flash` -> `gemini-3.5-flash-lite` -> `gemini-3.7-flash` (con promoción segura `MINIMAL` -> `LOW` en modelos no-lite).
 - **Fallback REST SSE**: si `google-genai` no está instalado (por ejemplo en un canal antiguo de nixpkgs) o falla internamente, usa `:streamGenerateContent?alt=sse` sobre `requests.Session` persistente.
 
 ---

@@ -16,6 +16,58 @@ def _get_fast_temp_dir() -> str:
     return tempfile.gettempdir()
 
 
+PIPER_VOICE_DIRS = (
+    os.path.expanduser("~/.local/share/cina/voices"),
+    os.path.expanduser("~/.local/share/piper-voices"),
+    os.path.expanduser("~/.local/share/piper"),
+)
+
+
+def find_piper_model(voice: str = "", search_dirs=PIPER_VOICE_DIRS) -> str:
+    """
+    Busca un modelo .onnx de Piper instalado localmente.
+    Prioriza el que coincide con el locale de la voz configurada (es-MX-... -> es_MX-...).
+    """
+    found: List[str] = []
+    for d in search_dirs:
+        try:
+            for name in sorted(os.listdir(d)):
+                path = os.path.join(d, name)
+                if name.endswith(".onnx") and os.path.exists(path + ".json"):
+                    found.append(path)
+        except OSError:
+            continue
+    if not found:
+        return ""
+    locale = "_".join((voice or "").split("-")[:2])  # "es-MX-JorgeNeural" -> "es_MX"
+    if locale:
+        for path in found:
+            if os.path.basename(path).startswith(locale + "-"):
+                return path
+    for path in found:
+        if os.path.basename(path).startswith("es_"):
+            return path
+    return found[0]
+
+
+def _rate_to_length_scale(rate: str) -> Optional[float]:
+    """Convierte el rate estilo edge-tts ("+20%", "-10%") a length_scale de Piper."""
+    m = re.fullmatch(r"\s*([+-]?\d+(?:\.\d+)?)\s*%\s*", rate or "")
+    if not m:
+        return None
+    speed = 1.0 + float(m.group(1)) / 100.0
+    if speed <= 0.1 or abs(speed - 1.0) < 1e-6:
+        return None
+    return 1.0 / speed
+
+
+def _volume_to_factor(volume: str) -> float:
+    m = re.fullmatch(r"\s*([+-]?\d+(?:\.\d+)?)\s*%\s*", volume or "")
+    if not m:
+        return 1.0
+    return max(0.0, 1.0 + float(m.group(1)) / 100.0)
+
+
 class SentenceChunker:
     """
     Divide texto en streaming en frases naturales para TTS de baja latencia.
@@ -26,8 +78,16 @@ class SentenceChunker:
     # Final de oración (. ! ?) seguido de espacio o salto de línea (evita cortar decimales como 3.14)
     _SENTENCE_END_RE = re.compile(r"([.!?]+)\s+|\n+")
 
-    def __init__(self, first_min_chars: int = 8, next_min_chars: int = 35, max_buffer_chars: int = 220):
+    def __init__(
+        self,
+        first_min_chars: int = 8,
+        next_min_chars: int = 35,
+        max_buffer_chars: int = 220,
+        first_max_chars: int = 70,
+    ):
         self.first_min_chars = first_min_chars
+        # La síntesis local escala con la longitud: una primera frase corta reduce el tiempo al primer audio
+        self.first_max_chars = first_max_chars
         self.next_min_chars = next_min_chars
         self.max_buffer_chars = max_buffer_chars
         self._buffer = ""
@@ -40,6 +100,16 @@ class SentenceChunker:
         sentences: List[str] = []
 
         while True:
+            if self._emitted_count == 0:
+                cut = self._first_soft_cut()
+                if cut:
+                    chunk = self._buffer[:cut].strip()
+                    self._buffer = self._buffer[cut:].lstrip()
+                    if chunk:
+                        sentences.append(chunk)
+                        self._emitted_count += 1
+                        continue
+
             min_len = self.first_min_chars if self._emitted_count == 0 else self.next_min_chars
             match = None
             for m in self._SENTENCE_END_RE.finditer(self._buffer):
@@ -74,6 +144,36 @@ class SentenceChunker:
             break
 
         return sentences
+
+    def _first_soft_cut(self) -> Optional[int]:
+        """Si la primera frase es larga, corta antes en fin de oración o pausa natural (coma, punto y coma, dos puntos)."""
+        if not self.first_max_chars or len(self._buffer) <= self.first_max_chars:
+            return None
+        for m in self._SENTENCE_END_RE.finditer(self._buffer):
+            if m.end() > self.first_max_chars + 1:
+                break
+            if m.end() >= self.first_min_chars:
+                return m.end()
+        buf, lo, hi = self._buffer, self.first_min_chars, self.first_max_chars
+        best = max(buf.rfind(sep, lo, hi + len(sep)) for sep in (", ", "; ", ": "))
+        if best != -1:
+            return best + 1
+        # Sin pausa explícita: cortar antes de un conector para mantener una prosodia natural
+        connectors = (" y ", " que ", " pero ", " con ", " donde ")
+        best = max(buf.rfind(sep, lo, hi + len(sep)) for sep in connectors)
+        if best != -1:
+            return best + 1
+        wide = int(hi * 1.6)
+        if len(buf) > wide:
+            best = max(buf.rfind(sep, lo, wide + len(sep)) for sep in connectors)
+            if best != -1:
+                return best + 1
+        # Frase muy larga sin pausas: cortar en el último espacio antes del límite
+        if len(buf) > 2 * hi:
+            best = buf.rfind(" ", lo, hi + 1)
+            if best != -1:
+                return best + 1
+        return None
 
     def flush(self) -> Optional[str]:
         rem = self._buffer.strip()
@@ -252,7 +352,13 @@ class TTSService:
         self.engine = engine or "edge-tts"
         self.audio_player = audio_player or "auto"
         self.tts_timeout = max(1.5, float(tts_timeout))
-        self.piper_model = piper_model or ""
+        self.piper_model = piper_model or find_piper_model(voice)
+
+        # Voz Piper cargada una sola vez en proceso (cargar el .onnx cuesta ~2 s; sintetizar ~0.3 s)
+        self._piper_voice = None
+        self._piper_voice_path = ""
+        self._piper_lock = threading.Lock()
+        self._piper_import_failed = False
 
         self.current_process: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
@@ -285,6 +391,47 @@ class TTSService:
             self._async_loop = loop
             self._async_thread = t
             return loop
+
+    def warmup(self):
+        """Precarga el motor TTS para que el primer disparo no pague la carga del modelo."""
+        engine = (self.engine or "edge-tts").lower()
+        try:
+            if engine == "piper":
+                voice = self._get_piper_voice()
+                if voice is not None:
+                    # Una síntesis corta inicializa las sesiones de onnxruntime
+                    for _ in voice.synthesize("Hola."):
+                        pass
+                    print(f"[TTS] Piper precargado en memoria: {os.path.basename(self._piper_voice_path)}")
+                else:
+                    print("[TTS] Piper no disponible (falta el módulo 'piper' o un modelo .onnx); se usará edge-tts/espeak-ng.")
+            elif engine == "edge-tts":
+                import edge_tts  # noqa: F401
+
+                self._ensure_async_loop()
+        except Exception as e:
+            print(f"[TTS] Warmup omitido: {e}")
+
+    def _get_piper_voice(self):
+        """Devuelve la voz Piper cacheada (in-process), o None si no hay módulo/modelo."""
+        model = self.piper_model
+        if not model or not os.path.exists(model) or self._piper_import_failed:
+            return None
+        with self._piper_lock:
+            if self._piper_voice is not None and self._piper_voice_path == model:
+                return self._piper_voice
+            try:
+                from piper import PiperVoice
+            except ImportError:
+                self._piper_import_failed = True
+                return None
+            try:
+                self._piper_voice = PiperVoice.load(model)
+                self._piper_voice_path = model
+            except Exception as e:
+                print(f"[TTS] No se pudo cargar el modelo Piper {model}: {e}")
+                self._piper_voice = None
+            return self._piper_voice
 
     @staticmethod
     def _safe_remove(path: Optional[str]):
@@ -460,7 +607,7 @@ class TTSService:
         if mp3_path:
             return mp3_path
 
-        if self.piper_model and shutil.which("piper"):
+        if self.piper_model:
             wav_path = self._generate_piper_tts(sentence)
             if wav_path:
                 return wav_path
@@ -495,7 +642,33 @@ class TTSService:
             return False
 
     def _generate_piper_tts(self, text: str) -> Optional[str]:
-        """Sintetizador neuronal local ultra-rápido (~50ms) si piper y su modelo .onnx están disponibles."""
+        """
+        Sintetizador neuronal local. Usa la voz Piper precargada en proceso (~0.3 s por frase);
+        sólo si el módulo no está disponible recurre al binario `piper` (que recarga el modelo cada vez).
+        """
+        voice = self._get_piper_voice()
+        if voice is not None:
+            import wave
+
+            from piper import SynthesisConfig
+
+            tmp_dir = _get_fast_temp_dir()
+            fd, wav_path = tempfile.mkstemp(prefix="cina_piper_", suffix=".wav", dir=tmp_dir)
+            os.close(fd)
+            try:
+                syn_cfg = SynthesisConfig(
+                    length_scale=_rate_to_length_scale(self.rate),
+                    volume=_volume_to_factor(self.volume),
+                )
+                with wave.open(wav_path, "wb") as wav_file:
+                    voice.synthesize_wav(text, wav_file, syn_config=syn_cfg)
+                if os.path.getsize(wav_path) > 100:
+                    return wav_path
+            except Exception as e:
+                print(f"[TTS] Error en Piper (in-process): {e}")
+            self._safe_remove(wav_path)
+            return None
+
         piper_bin = shutil.which("piper")
         if not piper_bin or not self.piper_model or not os.path.exists(self.piper_model):
             return None

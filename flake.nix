@@ -9,6 +9,40 @@
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+
+      # Piper TTS sólo para inferencia (onnxruntime): sin torch/lightning/librosa de entrenamiento.
+      # Se usa en proceso como módulo Python para mantener el modelo de voz cargado en memoria.
+      mkPiperLite = pkgs:
+        let
+          args = pkgs.piper-tts.override.__functionArgs or { };
+        in
+        if (pkgs ? piper-tts) && (args ? withTrain) then
+          pkgs.piper-tts.override {
+            withTrain = false;
+            withHTTP = false;
+            withJapanese = false;
+            withAlignment = false;
+          }
+        else
+          null;
+
+      mkPythonEnv = pkgs:
+        let
+          lib = pkgs.lib;
+          piperLite = mkPiperLite pkgs;
+        in
+        pkgs.python3.withPackages (ps:
+          [
+            ps.pillow
+            ps.tkinter
+            ps.requests
+          ]
+          ++ lib.optional (ps ? google-genai) ps.google-genai
+          ++ lib.optional (ps ? edge-tts) ps.edge-tts
+          ++ lib.optional (ps ? pynput) ps.pynput
+          ++ lib.optional (ps ? mss) ps.mss
+          ++ lib.optional (piperLite != null) (ps.toPythonModule piperLite)
+        );
     in
     {
       packages = forAllSystems (system:
@@ -16,17 +50,7 @@
           pkgs = nixpkgs.legacyPackages.${system};
           lib = pkgs.lib;
 
-          pythonEnv = pkgs.python3.withPackages (ps:
-            [
-              ps.pillow
-              ps.tkinter
-              ps.requests
-            ]
-            ++ lib.optional (ps ? google-genai) ps.google-genai
-            ++ lib.optional (ps ? edge-tts) ps.edge-tts
-            ++ lib.optional (ps ? pynput) ps.pynput
-            ++ lib.optional (ps ? mss) ps.mss
-          );
+          pythonEnv = mkPythonEnv pkgs;
 
           runtimeTools = [
             pkgs.pipewire
@@ -34,7 +58,7 @@
             pkgs.espeak-ng
             pkgs.grim
             pkgs.scrot
-          ] ++ lib.optional (pkgs ? piper-tts) pkgs.piper-tts;
+          ];
 
           cinaPkg = pkgs.stdenvNoCC.mkDerivation {
             pname = "cina";
@@ -116,17 +140,7 @@
           pkgs = nixpkgs.legacyPackages.${system};
           lib = pkgs.lib;
 
-          pythonEnv = pkgs.python3.withPackages (ps:
-            [
-              ps.pillow
-              ps.tkinter
-              ps.requests
-            ]
-            ++ lib.optional (ps ? google-genai) ps.google-genai
-            ++ lib.optional (ps ? edge-tts) ps.edge-tts
-            ++ lib.optional (ps ? pynput) ps.pynput
-            ++ lib.optional (ps ? mss) ps.mss
-          );
+          pythonEnv = mkPythonEnv pkgs;
         in
         {
           default = pkgs.mkShell {
@@ -137,7 +151,7 @@
               pkgs.espeak-ng
               pkgs.grim
               pkgs.scrot
-            ] ++ lib.optional (pkgs ? piper-tts) pkgs.piper-tts;
+            ];
 
             shellHook = ''
               export CINA_USE_SYSTEM_PYTHON=1

@@ -47,6 +47,7 @@ class CinaApp:
             thinking_level=config_mgr.get("thinking_level", "low"),
             media_resolution=config_mgr.get("media_resolution", "high"),
             timeout=config_mgr.get("request_timeout", 15.0),
+            hedge_delay=config_mgr.get("hedge_delay", 2.5),
         )
         self.tts_service = TTSService(
             voice=config_mgr.get("voice", "es-ES-AlvaroNeural"),
@@ -70,6 +71,7 @@ class CinaApp:
 
         # Pre-calentar cliente Gemini en segundo plano para reducir latencia del 1er disparo
         threading.Thread(target=self.gemini_service.warmup, daemon=True).start()
+        threading.Thread(target=self.tts_service.warmup, daemon=True).start()
 
         # Iniciar servicio de atajo global e IPC
         self.hotkey_service = HotkeyService(
@@ -338,6 +340,7 @@ class CinaApp:
         engine = self.tts_engine_var.get()
         config_mgr.set("tts_engine", engine)
         self.tts_service.engine = engine
+        threading.Thread(target=self.tts_service.warmup, daemon=True).start()
 
     def _on_voice_changed(self, event=None):
         voice = self.voice_var.get()

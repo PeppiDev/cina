@@ -14,12 +14,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "media_resolution": "high",  # "medium" (más rápido, 560 tokens) o "high" (máxima nitidez OCR, 1120 tokens)
     "stream_audio": True,  # Streaming Gemini + TTS frase por frase para latencia mínima
     "request_timeout": 15.0,  # Timeout por petición a la API en segundos
+    "hedge_delay": 2.5,  # Si no llega el primer token en N s, lanzar en paralelo el modelo de respaldo (0 = off)
     "tts_timeout": 5.0,  # Timeout por frase en Edge-TTS antes de fallback local
     "image_max_width": 1600,  # Ancho máximo de captura (equilibrio nitidez/velocidad)
     "image_quality": 82,  # Calidad JPEG (80-85 ideal para texto)
     "voice": "es-ES-AlvaroNeural",
-    "tts_engine": "edge-tts",  # "edge-tts", "piper" o "espeak-ng"
-    "piper_model": "",  # Ruta opcional al modelo .onnx de Piper TTS
+    "tts_engine": "piper",  # "piper" (local, recomendado), "edge-tts" (online) o "espeak-ng"
+    "piper_model": "",  # Ruta al .onnx de Piper; vacío = autodetectar en ~/.local/share/cina/voices
     "speech_rate": "+0%",
     "speech_volume": "+0%",
     "hotkey": "<ctrl>+<alt>+s",

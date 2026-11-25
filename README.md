@@ -20,8 +20,8 @@ Aplicación ligera de **accesibilidad visual y lectura por voz** para Linux (com
   - Wayland: **Niri** (`grim` en monitor enfocado + fallback nativo `niri msg action screenshot-screen`), KDE Plasma (`spectacle`), Hyprland / Sway (`grim`), GNOME (`gnome-screenshot`).
   - X11: `mss`, `scrot`, `maim`, `pillow`.
 - **Síntesis de Voz con Fallback Multi-Nivel**:
-  - `edge-tts` (voces neuronales en español con timeout de 5 s).
-  - `piper` opcional (voz neuronal 100% offline en ~50 ms).
+  - `piper` (por defecto): voz neuronal 100% local, cargada una vez en memoria (~0.2–0.4 s por frase). Modelos `.onnx` autodetectados en `~/.local/share/cina/voices/` (descárgalos de [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices), p. ej. `es_ES-davefx-medium` o `es_MX-claude-high`, con su `.onnx.json`).
+  - `edge-tts` (voces neuronales online, ~1.3–2.5 s por frase; timeout de 5 s).
   - `espeak-ng` offline y reproducción vía PipeWire (`pw-play`), `mpv`, `ffplay` o `paplay`.
 - **Interfaz Gráfica Dark (Tkinter)** y **Modo Demonio (`--headless`)** (con fallback automático a `--headless` en sesiones Wayland puras sin XWayland).
 
@@ -87,7 +87,8 @@ El script crea un entorno virtual aislado, instala las dependencias y registra `
 2. **Modelo, Razonamiento y Voz**:
    - **Modelos**: `gemini-3.8-flash` (recomendado), `gemini-3.5-flash-lite` (máxima velocidad), `gemini-3.7-flash`.
    - **Razonamiento**: `low` (rápido), `minimal` (en `3.5-flash-lite`), `medium` (análisis técnico más profundo).
-   - **Motor TTS**: `edge-tts`, `piper` (con ruta a modelo `.onnx` en `piper_model`) o `espeak-ng`.
+   - **Motor TTS**: `piper` (local; `piper_model` vacío = autodetectar en `~/.local/share/cina/voices`), `edge-tts` o `espeak-ng`.
+   - **`hedge_delay`** (por defecto `2.5`): si el modelo primario no entrega el primer token en ese tiempo, se lanza en paralelo el respaldo (`flash-lite`) y gana el primero en responder. `0` lo desactiva.
 
 ---
 

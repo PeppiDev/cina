@@ -30,6 +30,16 @@ DEFAULT_MODEL = "gemini-3.8-flash"
 FALLBACK_POOL = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite")
 
 
+class _AnyEvent:
+    """Vista de solo lectura que está 'set' si cualquiera de los eventos lo está."""
+
+    def __init__(self, *events: threading.Event):
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self._events)
+
+
 @dataclass
 class AnalysisResult:
     success: bool
@@ -49,6 +59,8 @@ class GeminiService:
         thinking_level: str = "low",
         media_resolution: str = "high",
         timeout: float = 15.0,
+        hedge_delay: float = 2.5,
+        slow_cooldown: float = 60.0,
     ):
         self.raw_api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.api_keys: List[str] = self._parse_keys(self.raw_api_key)
@@ -58,6 +70,11 @@ class GeminiService:
         self.thinking_level = (thinking_level or "low").strip().lower()
         self.media_resolution = (media_resolution or "high").strip().lower()
         self.timeout = max(3.0, float(timeout))
+        # Hedging: si el primer token no llega en hedge_delay s, lanzar en paralelo el siguiente candidato (0 = desactivado)
+        self.hedge_delay = max(0.0, float(hedge_delay))
+        # Cooldown para un modelo que perdió la carrera por no entregar el primer token a tiempo
+        self.slow_cooldown = max(0.0, float(slow_cooldown))
+        self._sdk_import_failed = False
 
         # Pool persistente de clientes SDK (reutiliza conexiones HTTP/2 + TLS) y sesión REST
         self._lock = threading.Lock()
@@ -125,7 +142,8 @@ class GeminiService:
     def _get_model_candidates(self) -> List[str]:
         """Devuelve la cadena de modelos en orden de prioridad sin duplicados."""
         models = [self.model]
-        for fallback in FALLBACK_POOL:
+        # Para voz en tiempo real prima la latencia: los modelos "lite" van primero como respaldo/hedge
+        for fallback in sorted(FALLBACK_POOL, key=lambda m: 0 if "lite" in m else 1):
             if fallback not in models:
                 models.append(fallback)
         return models
@@ -241,7 +259,8 @@ class GeminiService:
             return "invalid_arg", 0.0
 
         if any(tok in low for tok in ("500", "502", "503", "504", "unavailable", "overloaded", "deadline", "timeout", "timed out", "connection", "reset by peer", "eof")):
-            return "transient", 15.0
+            # 503 "high demand" / timeouts suelen durar minutos: evitar re-intentar ese modelo en cada disparo
+            return "transient", 60.0
 
         return "unknown", 10.0
 
@@ -511,149 +530,158 @@ class GeminiService:
             msg = self._format_429_error(wait_secs=min_wait)
             return AnalysisResult(success=False, text=msg, elapsed=elapsed, error_type="rate_limit")
 
-        last_429_error = ""
-        last_error = ""
-        last_error_type = "unknown"
-        sdk_import_failed = False
+        global_cancel = cancel_event or threading.Event()
+        pending: List[Tuple[int, str]] = list(candidates)
+        attempts: List[Dict] = []
+        cond = threading.Condition()
+        state: Dict = {"winner": None}
 
-        for key_idx, current_model in candidates:
-            if cancel_event and cancel_event.is_set():
-                return AnalysisResult(
-                    success=False,
-                    text="Solicitud cancelada.",
-                    elapsed=time.perf_counter() - t0,
-                    error_type="cancelled",
-                )
-
-            current_key = self.api_keys[key_idx]
-            emitted_chunks: List[str] = []
-
-            def _tracked_on_chunk(delta: str):
-                emitted_chunks.append(delta)
+        def _make_on_chunk(att: Dict):
+            def _cb(delta: str):
+                with cond:
+                    if state["winner"] is None:
+                        state["winner"] = att
+                        # El primero en emitir texto gana: cancelar los demás intentos en carrera
+                        for other in attempts:
+                            if other is not att:
+                                other["cancel"].set()
+                                # Arrancó antes y sigue sin primer token: modelo lento/saturado
+                                if not other["done"] and other["started"] < att["started"]:
+                                    other["lost_slow"] = True
+                        cond.notify_all()
+                    is_winner = state["winner"] is att
+                if not is_winner or global_cancel.is_set():
+                    return
+                att["emitted"].append(delta)
                 if on_chunk:
                     on_chunk(delta)
+            return _cb
 
-            print(f"[GeminiService] Streaming (Modelo: {current_model}, Key #{key_idx + 1}, Thinking: {self._resolve_thinking_level(current_model)})...")
-
+        def _run_attempt(att: Dict):
             try:
-                if not sdk_import_failed:
-                    try:
-                        text, ttft = self._stream_via_sdk(
-                            api_key=current_key,
-                            model=current_model,
-                            img_bytes=img_bytes,
-                            mime_type=resolved_mime,
-                            on_chunk=_tracked_on_chunk,
-                            cancel_event=cancel_event,
-                            t0=t0,
-                        )
-                    except ImportError:
-                        sdk_import_failed = True
-                        text, ttft = self._stream_via_rest(
-                            api_key=current_key,
-                            model=current_model,
-                            img_bytes=img_bytes,
-                            mime_type=resolved_mime,
-                            on_chunk=_tracked_on_chunk,
-                            cancel_event=cancel_event,
-                            t0=t0,
-                        )
-                else:
-                    text, ttft = self._stream_via_rest(
-                        api_key=current_key,
-                        model=current_model,
-                        img_bytes=img_bytes,
-                        mime_type=resolved_mime,
-                        on_chunk=_tracked_on_chunk,
-                        cancel_event=cancel_event,
-                        t0=t0,
-                    )
-
-                elapsed = time.perf_counter() - t0
-                if cancel_event and cancel_event.is_set():
-                    return AnalysisResult(
-                        success=False,
-                        text="Solicitud cancelada.",
-                        elapsed=elapsed,
-                        ttft=ttft,
-                        model_used=current_model,
-                        key_index=key_idx,
-                        error_type="cancelled",
-                    )
-
-                if text:
-                    # Recordar clave sana para priorizarla en el siguiente disparo
-                    self.current_key_idx = key_idx
-                    if current_model != self.model:
-                        print(f"[GeminiService] Resuelto con modelo de respaldo: {current_model} (TTFT: {ttft:.2f}s, Total: {elapsed:.2f}s)")
-                    else:
-                        print(f"[GeminiService] Completado (TTFT: {ttft:.2f}s, Total: {elapsed:.2f}s)")
-                    return AnalysisResult(
-                        success=True,
-                        text=text,
-                        elapsed=elapsed,
-                        ttft=ttft,
-                        model_used=current_model,
-                        key_index=key_idx,
-                    )
-
-                # Respuesta vacía: intentar siguiente candidato
-                last_error = "Gemini devolvió una respuesta vacía."
-                last_error_type = "empty"
-                continue
-
+                text, ttft = self._stream_once(
+                    key_idx=att["key_idx"],
+                    model=att["model"],
+                    img_bytes=img_bytes,
+                    mime_type=resolved_mime,
+                    on_chunk=_make_on_chunk(att),
+                    cancel_event=_AnyEvent(global_cancel, att["cancel"]),
+                    t0=t0,
+                )
+                att["text"], att["ttft"] = text, ttft
             except Exception as e:
                 err_str = str(e)
                 err_type, cooldown = self._classify_error(err_str)
-                last_error = err_str
-                last_error_type = err_type
-                print(f"[GeminiService] Error ({err_type}) en {current_model} con Key #{key_idx + 1}: {err_str[:220]}")
+                att["error"], att["error_type"] = err_str, err_type
+                if not att["cancel"].is_set() and not global_cancel.is_set():
+                    print(f"[GeminiService] Error ({err_type}) en {att['model']} con Key #{att['key_idx'] + 1}: {err_str[:220]}")
+                    self._record_failure(att["key_idx"], att["model"], err_type, cooldown)
+            finally:
+                with cond:
+                    att["done"] = True
+                    cond.notify_all()
 
-                # Si ya empezamos a emitir texto por voz/UI y se cortó al final, preservar lo recibido
-                if emitted_chunks:
+        def _launch_next():
+            key_idx, model = pending.pop(0)
+            att = {
+                "key_idx": key_idx,
+                "model": model,
+                "cancel": threading.Event(),
+                "done": False,
+                "text": "",
+                "ttft": 0.0,
+                "error": "",
+                "error_type": "",
+                "emitted": [],
+                "started": time.perf_counter(),
+            }
+            attempts.append(att)
+            hedge_note = " [hedge]" if len(attempts) > 1 else ""
+            print(f"[GeminiService] Streaming{hedge_note} (Modelo: {model}, Key #{key_idx + 1}, Thinking: {self._resolve_thinking_level(model)})...")
+            threading.Thread(target=_run_attempt, args=(att,), daemon=True).start()
+
+        hedge_delay = self.hedge_delay if self.hedge_delay > 0 else float("inf")
+        with cond:
+            _launch_next()
+            next_hedge_at = time.perf_counter() + hedge_delay
+            while True:
+                if global_cancel.is_set():
+                    for att in attempts:
+                        att["cancel"].set()
                     return AnalysisResult(
-                        success=True,
-                        text="".join(emitted_chunks).strip(),
+                        success=False,
+                        text="Solicitud cancelada.",
                         elapsed=time.perf_counter() - t0,
-                        model_used=current_model,
-                        key_index=key_idx,
+                        error_type="cancelled",
                     )
 
-                self._record_failure(key_idx, current_model, err_type, cooldown)
-                if err_type == "rate_limit":
-                    last_429_error = err_str
+                winner = state["winner"]
+                if winner is not None:
+                    if winner["done"]:
+                        break
+                    cond.wait(timeout=0.1)
+                    continue
 
-                # Si fue un fallo raro del SDK (no HTTP), intentar REST en este mismo par antes de pasar
-                if err_type == "unknown" and not sdk_import_failed:
-                    try:
-                        text, ttft = self._stream_via_rest(
-                            api_key=current_key,
-                            model=current_model,
-                            img_bytes=img_bytes,
-                            mime_type=resolved_mime,
-                            on_chunk=_tracked_on_chunk,
-                            cancel_event=cancel_event,
-                            t0=t0,
-                        )
-                        if text:
-                            self.current_key_idx = key_idx
-                            return AnalysisResult(
-                                success=True,
-                                text=text,
-                                elapsed=time.perf_counter() - t0,
-                                ttft=ttft,
-                                model_used=current_model,
-                                key_index=key_idx,
-                            )
-                    except Exception as e_rest:
-                        r_type, r_cd = self._classify_error(str(e_rest))
-                        self._record_failure(key_idx, current_model, r_type, r_cd)
-                        if r_type == "rate_limit":
-                            last_429_error = str(e_rest)
-                        last_error = str(e_rest)
-                        last_error_type = r_type
+                alive = [a for a in attempts if not a["done"]]
+                now = time.perf_counter()
+                # Lanzar el siguiente candidato si todos fallaron o si el primer token se demora (hedging)
+                if pending and (not alive or now >= next_hedge_at):
+                    _launch_next()
+                    next_hedge_at = now + hedge_delay
+                    continue
+                if not alive and not pending:
+                    break
+                wait_for = 0.1
+                if pending and next_hedge_at != float("inf"):
+                    wait_for = max(0.005, min(wait_for, next_hedge_at - now))
+                cond.wait(timeout=wait_for)
 
         elapsed = time.perf_counter() - t0
+        winner = state["winner"]
+
+        if winner is not None:
+            # Penalizar a los intentos que arrancaron antes y aún no daban el primer token (modelo lento/saturado)
+            for att in attempts:
+                if att.get("lost_slow"):
+                    self._record_failure(att["key_idx"], att["model"], "slow", self.slow_cooldown)
+                    print(f"[GeminiService] {att['model']} sin primer token a tiempo; se omitirá {int(self.slow_cooldown)} s.")
+
+            if global_cancel.is_set():
+                return AnalysisResult(
+                    success=False,
+                    text="Solicitud cancelada.",
+                    elapsed=elapsed,
+                    ttft=winner["ttft"],
+                    model_used=winner["model"],
+                    key_index=winner["key_idx"],
+                    error_type="cancelled",
+                )
+
+            text = winner["text"] or "".join(winner["emitted"]).strip()
+            self.current_key_idx = winner["key_idx"]
+            ttft = winner["ttft"]
+            if winner["model"] != self.model:
+                print(f"[GeminiService] Resuelto con modelo de respaldo: {winner['model']} (TTFT: {ttft:.2f}s, Total: {elapsed:.2f}s)")
+            else:
+                print(f"[GeminiService] Completado (TTFT: {ttft:.2f}s, Total: {elapsed:.2f}s)")
+            return AnalysisResult(
+                success=True,
+                text=text,
+                elapsed=elapsed,
+                ttft=ttft,
+                model_used=winner["model"],
+                key_index=winner["key_idx"],
+            )
+
+        # Ningún intento emitió texto
+        last_429_error = ""
+        last_error_type = "empty" if attempts else "unknown"
+        for att in attempts:
+            if att["error_type"]:
+                last_error_type = att["error_type"]
+                if att["error_type"] == "rate_limit":
+                    last_429_error = att["error"]
+
         if last_429_error:
             return AnalysisResult(
                 success=False,
@@ -681,6 +709,45 @@ class GeminiService:
             elapsed=elapsed,
             error_type=last_error_type,
         )
+
+    def _stream_once(
+        self,
+        key_idx: int,
+        model: str,
+        img_bytes: bytes,
+        mime_type: str,
+        on_chunk: Callable[[str], None],
+        cancel_event,
+        t0: float,
+    ) -> Tuple[str, float]:
+        """Un intento (clave, modelo): SDK google-genai con fallback REST SSE ante errores internos del SDK."""
+        api_key = self.api_keys[key_idx]
+        emitted = [False]
+
+        def _tracked(delta: str):
+            emitted[0] = True
+            on_chunk(delta)
+
+        kwargs = dict(
+            api_key=api_key,
+            model=model,
+            img_bytes=img_bytes,
+            mime_type=mime_type,
+            on_chunk=_tracked,
+            cancel_event=cancel_event,
+            t0=t0,
+        )
+        if not self._sdk_import_failed:
+            try:
+                return self._stream_via_sdk(**kwargs)
+            except ImportError:
+                self._sdk_import_failed = True
+            except Exception as e:
+                err_type, _ = self._classify_error(str(e))
+                # Fallo raro del SDK (no HTTP): reintentar por REST en el mismo par si aún no se emitió nada
+                if err_type != "unknown" or emitted[0]:
+                    raise
+        return self._stream_via_rest(**kwargs)
 
     def analyze_image(self, image_path: str) -> Tuple[bool, str, float]:
         """Wrapper síncrono retrocompatible que devuelve (success, text, elapsed)."""
