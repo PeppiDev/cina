@@ -558,17 +558,30 @@ class CinaApp:
                 undo=True,
             )
 
+        # Barra inferior empaquetada ANTES que los textos: si la ventana es pequeña
+        # (Niri la ajusta en mosaico), Tk recorta los textos y no los botones.
+        bottom = ttk.Frame(frame)
+        bottom.pack(side="bottom", fill="x", pady=(8, 0))
+        btns = ttk.Frame(bottom)
+        btns.pack(fill="x")
+        btn_save = ttk.Button(btns, text="💾 Guardar (Ctrl+S)", style="Accent.TButton")
+        btn_save.pack(side="left", padx=(0, 6))
+        btn_restore = ttk.Button(btns, text="↺ Restaurar por defecto", style="Action.TButton")
+        btn_restore.pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Cerrar", style="Action.TButton", command=win.destroy).pack(side="right")
+        status_lbl = ttk.Label(bottom, text="Edita el texto y pulsa Guardar.", font=("Sans", 9), foreground="#8a93a2")
+        status_lbl.pack(anchor="w", pady=(6, 0))
+
+        # User prompt también anclado abajo (sobre los botones); el system prompt ocupa el resto
+        user_txt = _make_text(3)
+        user_txt.pack(side="bottom", fill="x", pady=(4, 0))
+        user_txt.insert("1.0", self.gemini_service.user_prompt)
+        ttk.Label(frame, text="MENSAJE ENVIADO JUNTO A LA CAPTURA (user prompt)", font=("Sans", 9, "bold"), foreground="#8a93a2").pack(side="bottom", anchor="w")
+
         ttk.Label(frame, text="INSTRUCCIONES DE SISTEMA (system prompt)", font=("Sans", 9, "bold"), foreground="#8a93a2").pack(anchor="w")
-        system_txt = _make_text(18)
+        system_txt = _make_text(12)
         system_txt.pack(fill="both", expand=True, pady=(4, 10))
         system_txt.insert("1.0", self.gemini_service.system_prompt)
-
-        ttk.Label(frame, text="MENSAJE ENVIADO JUNTO A LA CAPTURA (user prompt)", font=("Sans", 9, "bold"), foreground="#8a93a2").pack(anchor="w")
-        user_txt = _make_text(3)
-        user_txt.pack(fill="x", pady=(4, 10))
-        user_txt.insert("1.0", self.gemini_service.user_prompt)
-
-        status_lbl = ttk.Label(frame, text="", font=("Sans", 9), foreground="#98c379")
 
         def _save():
             system_prompt = system_txt.get("1.0", "end").strip()
@@ -590,12 +603,10 @@ class CinaApp:
             user_txt.insert("1.0", USER_PROMPT)
             status_lbl.configure(text="Valores por defecto cargados (pulsa Guardar para aplicarlos).", foreground="#61afef")
 
-        btns = ttk.Frame(frame)
-        btns.pack(fill="x")
-        ttk.Button(btns, text="💾 Guardar", style="Accent.TButton", command=_save).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="↺ Restaurar por defecto", style="Action.TButton", command=_restore_defaults).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Cerrar", style="Action.TButton", command=win.destroy).pack(side="right")
-        status_lbl.pack(anchor="w", pady=(8, 0))
+        btn_save.configure(command=_save)
+        btn_restore.configure(command=_restore_defaults)
+        win.bind("<Control-s>", lambda _e: (_save(), "break")[1])
+
 
     def show_kde_shortcut_dialog(self):
         """Muestra la guía de configuración de atajos para Niri o KDE Plasma."""
