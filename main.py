@@ -23,6 +23,8 @@ def _create_services():
         media_resolution=config_mgr.get("media_resolution", "high"),
         timeout=config_mgr.get("request_timeout", 15.0),
         hedge_delay=config_mgr.get("hedge_delay", 2.5),
+        system_prompt=config_mgr.get("system_prompt", ""),
+        user_prompt=config_mgr.get("user_prompt", ""),
     )
     tts = TTSService(
         voice=config_mgr.get("voice", "es-ES-AlvaroNeural"),

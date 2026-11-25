@@ -48,6 +48,8 @@ class CinaApp:
             media_resolution=config_mgr.get("media_resolution", "high"),
             timeout=config_mgr.get("request_timeout", 15.0),
             hedge_delay=config_mgr.get("hedge_delay", 2.5),
+            system_prompt=config_mgr.get("system_prompt", ""),
+            user_prompt=config_mgr.get("user_prompt", ""),
         )
         self.tts_service = TTSService(
             voice=config_mgr.get("voice", "es-ES-AlvaroNeural"),
@@ -169,7 +171,10 @@ class CinaApp:
         is_niri = bool(os.environ.get("NIRI_SOCKET")) or "niri" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
         shortcut_btn_text = "⚙️ Atajo Niri" if is_niri else "⚙️ Atajo Escritorio"
         self.btn_kde = ttk.Button(actions_frame, text=shortcut_btn_text, style="Action.TButton", command=self.show_kde_shortcut_dialog)
-        self.btn_kde.pack(side="left")
+        self.btn_kde.pack(side="left", padx=(0, 6))
+
+        self.btn_prompt = ttk.Button(actions_frame, text="📝 Prompt", style="Action.TButton", command=self.show_prompt_editor)
+        self.btn_prompt.pack(side="left")
 
         # 4. Sección de Configuración
         config_card = ttk.Frame(main_frame, style="Card.TFrame", padding=12)
@@ -518,17 +523,92 @@ class CinaApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def show_prompt_editor(self):
+        """Ventana para ver, editar y guardar los prompts que se envían a Gemini."""
+        from cina.gemini_service import SYSTEM_PROMPT, USER_PROMPT
+
+        existing = getattr(self, "_prompt_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_force()
+            return
+
+        win = tk.Toplevel(self.root)
+        self._prompt_window = win
+        win.title("Prompt enviado a Gemini")
+        win.configure(bg=self.bg_color)
+        win.geometry("760x560")
+        win.transient(self.root)
+
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        def _make_text(height: int) -> tk.Text:
+            return tk.Text(
+                frame,
+                wrap="word",
+                height=height,
+                bg="#1e2227",
+                fg="#e5e5e5",
+                insertbackground="#ffffff",
+                font=("Sans", 10),
+                relief="flat",
+                padx=8,
+                pady=8,
+                undo=True,
+            )
+
+        ttk.Label(frame, text="INSTRUCCIONES DE SISTEMA (system prompt)", font=("Sans", 9, "bold"), foreground="#8a93a2").pack(anchor="w")
+        system_txt = _make_text(18)
+        system_txt.pack(fill="both", expand=True, pady=(4, 10))
+        system_txt.insert("1.0", self.gemini_service.system_prompt)
+
+        ttk.Label(frame, text="MENSAJE ENVIADO JUNTO A LA CAPTURA (user prompt)", font=("Sans", 9, "bold"), foreground="#8a93a2").pack(anchor="w")
+        user_txt = _make_text(3)
+        user_txt.pack(fill="x", pady=(4, 10))
+        user_txt.insert("1.0", self.gemini_service.user_prompt)
+
+        status_lbl = ttk.Label(frame, text="", font=("Sans", 9), foreground="#98c379")
+
+        def _save():
+            system_prompt = system_txt.get("1.0", "end").strip()
+            user_prompt = user_txt.get("1.0", "end").strip()
+            # Guardar vacío si coincide con el predeterminado, para seguir futuras mejoras del prompt por defecto
+            config_mgr.config["system_prompt"] = "" if system_prompt == SYSTEM_PROMPT else system_prompt
+            config_mgr.config["user_prompt"] = "" if user_prompt == USER_PROMPT else user_prompt
+            saved = config_mgr.save()
+            self.gemini_service.set_prompts(system_prompt, user_prompt)
+            if saved:
+                status_lbl.configure(text="✔ Guardado. Se aplicará en la próxima captura.", foreground="#98c379")
+            else:
+                status_lbl.configure(text="⚠ Aplicado, pero no se pudo guardar en disco.", foreground="#e06c75")
+
+        def _restore_defaults():
+            system_txt.delete("1.0", "end")
+            system_txt.insert("1.0", SYSTEM_PROMPT)
+            user_txt.delete("1.0", "end")
+            user_txt.insert("1.0", USER_PROMPT)
+            status_lbl.configure(text="Valores por defecto cargados (pulsa Guardar para aplicarlos).", foreground="#61afef")
+
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="💾 Guardar", style="Accent.TButton", command=_save).pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="↺ Restaurar por defecto", style="Action.TButton", command=_restore_defaults).pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Cerrar", style="Action.TButton", command=win.destroy).pack(side="right")
+        status_lbl.pack(anchor="w", pady=(8, 0))
+
     def show_kde_shortcut_dialog(self):
         """Muestra la guía de configuración de atajos para Niri o KDE Plasma."""
         is_niri = bool(os.environ.get("NIRI_SOCKET")) or "niri" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
         if is_niri:
             msg = (
                 "Para activar los atajos en Niri (~/.config/niri/config.kdl):\n\n"
-                'spawn-at-startup "cina" "--headless"\n\n'
                 "binds {\n"
-                '    Mod+Alt+S { spawn "cina-trigger"; }\n'
-                '    Mod+Alt+Shift+S { spawn "cina-trigger" "--stop"; }\n'
+                '    Ctrl+Alt+S { spawn "~/.nix-profile/bin/cina-trigger"; }\n'
+                '    Ctrl+Alt+X { spawn "~/.nix-profile/bin/cina-trigger" "--stop"; }\n'
                 "}\n\n"
+                "En Niri el atajo debe registrarlo el compositor: así funciona aunque\n"
+                "la ventana de Cina no esté visible ni enfocada.\n\n"
                 "¿Deseas instalar/actualizar el acceso 'cina-trigger' en ~/.local/bin?"
             )
             if messagebox.askyesno("Configuración de Atajo Niri", msg):

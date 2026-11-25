@@ -35,6 +35,12 @@ class HotkeyService:
             print("[Hotkey] Sesión Wayland pura detectada (sin X11): usando servidor IPC para 'cina-trigger'.")
             return
 
+        # 2b. En Niri, pynput (vía XWayland) sólo recibe teclas cuando una ventana X tiene el foco:
+        #     el atajo global lo registra el compositor con `binds { Ctrl+Alt+S { spawn "cina-trigger"; } }`
+        if os.environ.get("NIRI_SOCKET") or "niri" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower():
+            print("[Hotkey] Niri detectado: el atajo global se gestiona en config.kdl con 'cina-trigger' (IPC).")
+            return
+
         # 3. Intentar registrar el hotkey nativo con pynput (X11)
         try:
             from pynput import keyboard

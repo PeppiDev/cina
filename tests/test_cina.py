@@ -77,6 +77,16 @@ class TestGeminiService(unittest.TestCase):
         self.assertEqual(out[0], "La pantalla muestra el panel de configuración del sistema operativo")
         self.assertTrue(out[1].startswith("con varias"))
 
+    def test_custom_prompts_are_sent_and_updatable(self):
+        from cina.gemini_service import SYSTEM_PROMPT, USER_PROMPT
+
+        svc = GeminiService(api_key="k1", system_prompt="Sistema A", user_prompt="Usuario A")
+        self.assertEqual(svc._build_sdk_config(pytypes.SimpleNamespace(GenerateContentConfig=dict), "gemini-3.8-flash", include_advanced=False)["system_instruction"], "Sistema A")
+        svc.set_prompts("Sistema B", "Usuario B")
+        self.assertEqual((svc.system_prompt, svc.user_prompt), ("Sistema B", "Usuario B"))
+        svc.set_prompts("  ", "")
+        self.assertEqual((svc.system_prompt, svc.user_prompt), (SYSTEM_PROMPT, USER_PROMPT))
+
     def test_hedged_request_uses_first_model_that_streams(self):
         svc = GeminiService(api_key="k1", model="gemini-3.8-flash", hedge_delay=0.1, slow_cooldown=60.0)
         calls = []

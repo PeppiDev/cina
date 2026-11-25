@@ -88,6 +88,7 @@ El script crea un entorno virtual aislado, instala las dependencias y registra `
    - **Modelos**: `gemini-3.8-flash` (recomendado), `gemini-3.5-flash-lite` (máxima velocidad), `gemini-3.7-flash`.
    - **Razonamiento**: `low` (rápido), `minimal` (en `3.5-flash-lite`), `medium` (análisis técnico más profundo).
    - **Motor TTS**: `piper` (local; `piper_model` vacío = autodetectar en `~/.local/share/cina/voices`), `edge-tts` o `espeak-ng`.
+   - **Prompt (botón 📝 Prompt)**: muestra el *system prompt* y el mensaje que se envían a Gemini; se pueden editar, guardar (`system_prompt` / `user_prompt` en el config) o restaurar a los valores por defecto. Se aplican desde la siguiente captura sin reiniciar.
    - **`hedge_delay`** (por defecto `2.5`): si el modelo primario no entrega el primer token en ese tiempo, se lanza en paralelo el respaldo (`flash-lite`) y gana el primero en responder. `0` lo desactiva.
 
 ---
@@ -99,10 +100,12 @@ El script crea un entorno virtual aislado, instala las dependencias y registra `
   spawn-at-startup "cina" "--headless"
 
   binds {
-      Mod+Alt+S { spawn "cina-trigger"; }
-      Mod+Alt+Shift+S { spawn "cina-trigger" "--stop"; }
+      Ctrl+Alt+S repeat=false { spawn "~/.nix-profile/bin/cina-trigger"; }
+      Ctrl+Alt+X repeat=false { spawn "~/.nix-profile/bin/cina-trigger" "--stop"; }
   }
   ```
+  - **El atajo debe registrarlo Niri** (bloque `binds`): así es global aunque la ventana de Cina esté oculta o sin foco. Cina no usa `pynput` en Niri, porque vía XWayland sólo recibe teclas con su ventana enfocada.
+  - Usa la ruta del perfil Nix (`~/.nix-profile/bin/cina-trigger`): ese wrapper incluye `socat` y Python en su `PATH`.
   - **Captura en Niri**: usa `grim` apuntando automáticamente al monitor enfocado (`niri msg --json focused-output`) con fallback nativo a `niri msg action screenshot-screen` en `/dev/shm`.
   - **Interfaz gráfica en Niri**: si quieres abrir la ventana Tkinter (`cina`), asegúrate de tener `xwayland-satellite` habilitado en NixOS/Niri. Si no está disponible, `cina` cambia automáticamente a modo demonio (`--headless`).
 - **KDE Plasma (Wayland / X11)**: *Preferencias del Sistema -> Atajos de teclado -> Añadir nuevo -> Orden o script*:

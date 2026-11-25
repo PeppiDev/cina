@@ -23,6 +23,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "piper_model": "",  # Ruta al .onnx de Piper; vacío = autodetectar en ~/.local/share/cina/voices
     "speech_rate": "+0%",
     "speech_volume": "+0%",
+    "system_prompt": "",  # Instrucciones de sistema para Gemini (vacío = prompt por defecto)
+    "user_prompt": "",  # Mensaje enviado junto a la captura (vacío = prompt por defecto)
     "hotkey": "<ctrl>+<alt>+s",
     "capture_backend": "auto",  # "auto", "grim", "niri", "spectacle", "scrot", "maim", "mss", "gnome-screenshot", "pillow"
     "prompt_style": "concise_voice",  # Respuestas concisas preparadas para locución

@@ -18,6 +18,8 @@ Reglas:
 5. Formato obligatorio para voz (TTS): escribe en español natural y fluido, sin asteriscos (*), almohadillas (#), backticks (`), guiones de lista, tablas ni LaTeX.
 """.strip()
 
+USER_PROMPT = "Analiza esta pantalla y responde siguiendo las instrucciones del sistema."
+
 DEPRECATED_MODEL_MAP = {
     "gemini-2.5-flash": "gemini-3.8-flash",
     "gemini-2.5-pro": "gemini-3.8-flash",
@@ -61,6 +63,8 @@ class GeminiService:
         timeout: float = 15.0,
         hedge_delay: float = 2.5,
         slow_cooldown: float = 60.0,
+        system_prompt: str = "",
+        user_prompt: str = "",
     ):
         self.raw_api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.api_keys: List[str] = self._parse_keys(self.raw_api_key)
@@ -75,6 +79,9 @@ class GeminiService:
         # Cooldown para un modelo que perdió la carrera por no entregar el primer token a tiempo
         self.slow_cooldown = max(0.0, float(slow_cooldown))
         self._sdk_import_failed = False
+        # Prompts editables desde la GUI (vacío = prompts por defecto)
+        self.system_prompt = (system_prompt or "").strip() or SYSTEM_PROMPT
+        self.user_prompt = (user_prompt or "").strip() or USER_PROMPT
 
         # Pool persistente de clientes SDK (reutiliza conexiones HTTP/2 + TLS) y sesión REST
         self._lock = threading.Lock()
@@ -115,6 +122,12 @@ class GeminiService:
     def set_thinking_level(self, level: str):
         with self._lock:
             self.thinking_level = (level or "low").strip().lower()
+
+    def set_prompts(self, system_prompt: str, user_prompt: str):
+        """Actualiza los prompts en caliente; se aplican desde la siguiente captura."""
+        with self._lock:
+            self.system_prompt = (system_prompt or "").strip() or SYSTEM_PROMPT
+            self.user_prompt = (user_prompt or "").strip() or USER_PROMPT
 
     def set_media_resolution(self, resolution: str):
         with self._lock:
@@ -207,7 +220,7 @@ class GeminiService:
     def _build_sdk_config(self, types_mod, model: str, include_advanced: bool = True):
         """Construye GenerateContentConfig optimizado para baja latencia y alta fiabilidad."""
         cfg_kwargs = {
-            "system_instruction": SYSTEM_PROMPT,
+            "system_instruction": self.system_prompt,
             "temperature": 0.15,
             "max_output_tokens": 2048,
         }
@@ -375,7 +388,7 @@ class GeminiService:
 
         client = self._get_sdk_client(api_key)
         image_part = types.Part.from_bytes(data=img_bytes, mime_type=mime_type)
-        contents = [image_part, "Analiza esta pantalla y responde siguiendo las instrucciones del sistema."]
+        contents = [image_part, self.user_prompt]
 
         def _run_stream(include_advanced: bool) -> Tuple[str, float]:
             cfg = self._build_sdk_config(types, model, include_advanced=include_advanced)
@@ -433,12 +446,12 @@ class GeminiService:
             gen_cfg["thinkingConfig"] = {"thinkingLevel": thinking_lvl}
 
         payload = {
-            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "systemInstruction": {"parts": [{"text": self.system_prompt}]},
             "contents": [
                 {
                     "parts": [
                         {"inlineData": {"mimeType": mime_type, "data": b64_data}},
-                        {"text": "Analiza esta pantalla y responde siguiendo las instrucciones del sistema."},
+                        {"text": self.user_prompt},
                     ]
                 }
             ],
