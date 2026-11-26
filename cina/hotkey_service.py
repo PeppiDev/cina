@@ -36,7 +36,7 @@ class HotkeyService:
             return
 
         # 2b. En Niri, pynput (vía XWayland) sólo recibe teclas cuando una ventana X tiene el foco:
-        #     el atajo global lo registra el compositor con `binds { Ctrl+Alt+S { spawn "cina-trigger"; } }`
+        #     el atajo global lo registra el compositor con `binds { ISO_Level3_Shift+Comma { spawn "cina-trigger"; } }`
         if os.environ.get("NIRI_SOCKET") or "niri" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower():
             print("[Hotkey] Niri detectado: el atajo global se gestiona en config.kdl con 'cina-trigger' (IPC).")
             return

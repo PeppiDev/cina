@@ -615,9 +615,10 @@ class CinaApp:
             msg = (
                 "Para activar los atajos en Niri (~/.config/niri/config.kdl):\n\n"
                 "binds {\n"
-                '    Ctrl+Alt+S { spawn "~/.nix-profile/bin/cina-trigger"; }\n'
+                '    ISO_Level3_Shift+Comma { spawn "~/.nix-profile/bin/cina-trigger"; }\n'
                 '    Ctrl+Alt+X { spawn "~/.nix-profile/bin/cina-trigger" "--stop"; }\n'
                 "}\n\n"
+                "ISO_Level3_Shift es AltGr: AltGr + la tecla ',' (a la derecha de la M).\n\n"
                 "En Niri el atajo debe registrarlo el compositor: así funciona aunque\n"
                 "la ventana de Cina no esté visible ni enfocada.\n\n"
                 "¿Deseas instalar/actualizar el acceso 'cina-trigger' en ~/.local/bin?"

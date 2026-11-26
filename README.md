@@ -100,10 +100,11 @@ El script crea un entorno virtual aislado, instala las dependencias y registra `
   spawn-at-startup "cina" "--headless"
 
   binds {
-      Ctrl+Alt+S repeat=false { spawn "~/.nix-profile/bin/cina-trigger"; }
+      ISO_Level3_Shift+Comma repeat=false { spawn "~/.nix-profile/bin/cina-trigger"; }
       Ctrl+Alt+X repeat=false { spawn "~/.nix-profile/bin/cina-trigger" "--stop"; }
   }
   ```
+  - `ISO_Level3_Shift` es **AltGr**: `ISO_Level3_Shift+Comma` = AltGr + la tecla `,` / `;` (a la derecha de la M en teclados español/latam). Niri compara la tecla sin modificadores, así que funciona aunque AltGr+`,` produzca otro carácter.
   - **El atajo debe registrarlo Niri** (bloque `binds`): así es global aunque la ventana de Cina esté oculta o sin foco. Cina no usa `pynput` en Niri, porque vía XWayland sólo recibe teclas con su ventana enfocada.
   - Usa la ruta del perfil Nix (`~/.nix-profile/bin/cina-trigger`): ese wrapper incluye `socat` y Python en su `PATH`.
   - **Captura en Niri**: usa `grim` apuntando automáticamente al monitor enfocado (`niri msg --json focused-output`) con fallback nativo a `niri msg action screenshot-screen` en `/dev/shm`.
